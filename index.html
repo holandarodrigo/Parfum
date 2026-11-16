@@ -1281,6 +1281,12 @@ window.addEventListener('load', function() {
   </div>
 
   <div class="sheet-divider"></div>
+  <div class="sheet-section-label">Fotos do frasco</div>
+  <div id="edit-photos-grid" style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:6px"></div>
+  <div style="font-size:11px;color:var(--text3);margin-bottom:10px">Toque numa foto para exibi-la no card. Alterações de foto são salvas na hora.</div>
+  <input type="file" id="edit-photo-input" accept="image/*" multiple style="display:none" onchange="handleEditPhotoUpload(event)">
+
+  <div class="sheet-divider"></div>
   <div class="sheet-section-label">Contratipos</div>
   <div id="edit-ct-rows-container"></div>
   <button class="btn-ct-add" onclick="addEditCtRow()">
@@ -1867,8 +1873,8 @@ function renderSection(key) {
         <div style="flex-shrink:0;display:flex;flex-direction:column;align-items:center;min-width:22px">
           <span class="rank-tag-c ${rankTierClass(ri)}" style="position:static;border-radius:6px;font-size:8px;padding:2px 6px">${ri+1}°</span>
         </div>
-        ${bottleCache[item.id]
-          ? `<img src="${bottleCache[item.id]}" style="height:44px;width:36px;object-fit:contain;object-position:center;flex-shrink:0;filter:drop-shadow(0 1px 4px rgba(0,0,0,0.6))" alt="">`
+        ${bottleSrc(item)
+          ? `<img src="${bottleSrc(item)}" style="height:44px;width:36px;object-fit:contain;object-position:center;flex-shrink:0;filter:drop-shadow(0 1px 4px rgba(0,0,0,0.6))" alt="">`
           : `<div style="width:36px;flex-shrink:0"></div>`
         }
         <div style="flex:1;min-width:0">
@@ -1936,7 +1942,7 @@ function renderSection(key) {
       const dnTag = dnArr.map(d => `<span class="card-dn-tag ${d==='dia'?'dn-dia':'dn-noite'}">${d==='dia'?'☀️ Dia':'🌙 Noite'}</span>`).join('');
       const cTag = concTag(item.conc);
 
-      const _bottleUrl = bottleCache[item.id] || null;
+      const _bottleUrl = bottleSrc(item);
       const _tierCls = rankTierClass(ri);
       html+=`<div class="card ${catClass}${isEmpty?' empty-card':''}" id="card-${key}-${ri}" onclick="openDetail('${key}',${ri})">
         <span class="rank-tag-c ${_tierCls}">${ri+1}°</span>
@@ -2072,7 +2078,8 @@ function renderDetailModal() {
       cursor:pointer;transition:0.15s ease;display:flex;align-items:center;justify-content:center;gap:6px;
     ">↩ Recuperar</button>`;
 
-  const _dBottle = bottleCache[item.id] || null;
+  const _dBottle = bottleSrc(item);
+  const _nPhotos = getPhotos(item).length;
   const _hasKey  = !!localStorage.getItem('parfum_openai_key');
 
   document.getElementById('detail-content').innerHTML=`
@@ -2105,13 +2112,13 @@ function renderDetailModal() {
         " onclick="triggerBottleUpload('${key}',${i})"
            onmouseover="this.style.borderColor='rgba(255,255,255,0.2)'"
            onmouseout="this.style.borderColor='rgba(255,255,255,0.1)'">
-          <span style="font-size:13px">📷</span> ${_dBottle ? 'Trocar foto' : 'Adicionar foto'}
+          <span style="font-size:13px">📷</span> Adicionar foto${_nPhotos>1?' ('+_nPhotos+')':''}
         </button>
         ${_dBottle ? `<button style="
           padding:7px 10px;border-radius:8px;font-size:12px;cursor:pointer;
           background:transparent;border:1px solid rgba(248,113,113,0.2);
           color:rgba(248,113,113,0.5);transition:0.15s ease;
-        " onclick="removeBottleForItem('${key}',${i})"
+        " onclick="removeBottleForItem('${key}',${i})" title="Remover foto exibida"
            onmouseover="this.style.color='#f87171';this.style.borderColor='rgba(248,113,113,0.4)'"
            onmouseout="this.style.color='rgba(248,113,113,0.5)';this.style.borderColor='rgba(248,113,113,0.2)'">✕</button>` : ''}
       </div>
@@ -2449,6 +2456,7 @@ function openEditSheet(key,i) {
     const dnArr = Array.isArray(item.dn)?item.dn:(item.dn?[item.dn]:[]);
     if(dnArr.includes(el.dataset.val)) el.classList.add('sel-'+el.dataset.val);
   });
+  renderEditPhotos();
   document.getElementById('edit-overlay').classList.add('active');
   document.getElementById('edit-sheet').classList.add('active');
   document.getElementById('btn-archive-item').style.display = key === 'arquivo' ? 'none' : 'flex';
@@ -2721,7 +2729,7 @@ function doDelete() {
   const deletedItem = lists[pendingDeleteKey][pendingDeleteIdx];
   const deletedName = deletedItem ? deletedItem.original : '';
   // Limpar frasco gerado por IA
-  if (deletedItem && deletedItem.id) deleteBottleImage(deletedItem.id);
+  if (deletedItem && deletedItem.id) { deleteBottleImage(deletedItem.id); getPhotos(deletedItem).forEach(r => { if (!/^https?:/.test(r)) deleteBottleImage(r); }); }
   lists[pendingDeleteKey].splice(pendingDeleteIdx,1);
   save(pendingDeleteKey,lists[pendingDeleteKey]);
   renderSection(pendingDeleteKey); renderDashboard(); closeConfirm();
@@ -3779,69 +3787,149 @@ function triggerBottleUpload(key, idx) {
 }
 
 async function handleBottleUpload(event) {
-  const file = event.target.files[0];
-  if (!file) return;
+  const files = Array.from(event.target.files || []);
   event.target.value = ''; // reset para permitir re-upload do mesmo arquivo
-
-  const key = _pendingBottleKey;
-  const idx = _pendingBottleIdx;
+  if (!files.length) return;
+  const key = _pendingBottleKey, idx = _pendingBottleIdx;
   if (key === null || idx === null) return;
+  await addPhotos(key, idx, files, 'detail');
+}
 
+// ─── Múltiplas fotos por perfume ──────────────────────────────
+// item.photos   = lista de refs (URL https da nuvem OU chave local no IndexedDB, ex.: "local:abc")
+// item.photoIdx = índice da foto exibida no card
+function getPhotos(item) {
+  if (Array.isArray(item.photos) && item.photos.length) return item.photos;
+  if (item.bottleUrl) return [item.bottleUrl];       // legado: 1 foto na nuvem
+  if (bottleCache[item.id]) return [item.id];        // legado: 1 foto local
+  return [];
+}
+function photoSrc(ref) {
+  if (!ref) return null;
+  return /^(https?:|data:)/.test(ref) ? ref : (bottleCache[ref] || null);
+}
+function bottleSrc(item) {
+  const ph = getPhotos(item);
+  if (!ph.length) return null;
+  const i = Math.min(Math.max(item.photoIdx || 0, 0), ph.length - 1);
+  return photoSrc(ph[i]) || ph.map(photoSrc).find(Boolean) || null;
+}
+// Converte item legado para o formato novo (migra foto local antiga para chave própria)
+async function normalizePhotos(item) {
+  if (Array.isArray(item.photos) && item.photos.length) return;
+  const ph = [];
+  if (item.bottleUrl) ph.push(item.bottleUrl);
+  else if (bottleCache[item.id]) {
+    const ref = 'local:' + uid();
+    await saveBottleImage(ref, bottleCache[item.id]);
+    await deleteBottleImage(item.id);
+    ph.push(ref);
+  }
+  item.photos = ph;
+  item.photoIdx = 0;
+}
+// bottleUrl continua refletindo a foto exibida (compatível com sync/export antigos)
+function syncActivePhoto(item) {
+  const ph = item.photos || [];
+  if (!ph.length) { delete item.photos; delete item.photoIdx; delete item.bottleUrl; return; }
+  item.photoIdx = Math.min(Math.max(item.photoIdx || 0, 0), ph.length - 1);
+  const act = ph[item.photoIdx];
+  if (/^https?:/.test(act)) item.bottleUrl = act; else delete item.bottleUrl;
+}
+async function processPhotoFile(file) {
+  const dataUrl = await new Promise((res, rej) => {
+    const r = new FileReader(); r.onload = e => res(e.target.result); r.onerror = rej; r.readAsDataURL(file);
+  });
+  const resized = await resizeBottle(dataUrl, 512);   // só redimensiona, não altera a foto
+  const cloudUrl = await uploadToCloudinary(resized).catch(e => {
+    console.warn('[Cloudinary]', e);
+    showToast('⚠️ Cloudinary falhou — salvo localmente', '#f5c842');
+    return null;
+  });
+  if (cloudUrl) return cloudUrl;
+  const ref = 'local:' + uid();
+  await saveBottleImage(ref, resized);
+  return ref;
+}
+async function addPhotos(key, idx, files, from) {
   const item = lists[key]?.[idx];
   if (!item) return;
-
   showToast('Processando imagem...', '#7c6af7');
-
   try {
-    showToast('Processando...', '#7c6af7');
-
-    // Ler arquivo como dataURL
-    const dataUrl = await new Promise((res, rej) => {
-      const reader = new FileReader();
-      reader.onload = e => res(e.target.result);
-      reader.onerror = rej;
-      reader.readAsDataURL(file);
-    });
-
-    // Só redimensionar — não alterar a foto original
-    const resized = await resizeBottle(dataUrl, 512);
-
-    // Tentar Cloudinary primeiro
-    const cloudUrl = await uploadToCloudinary(resized).catch(e => {
-      console.warn('[Cloudinary]', e);
-      showToast('⚠️ Cloudinary falhou — salvo localmente', '#f5c842');
-      return null;
-    });
-
-    if (cloudUrl) {
-      // Salva URL da nuvem no perfume + cache local
-      item.bottleUrl = cloudUrl;
-      bottleCache[item.id] = cloudUrl;
-      save(key, lists[key]);
-      showToast('☁️ Foto salva na nuvem!', '#38bdf8');
-    } else {
-      // Fallback: IndexedDB local
-      await saveBottleImage(item.id, resized);
-      showToast('✓ Foto salva localmente', '#4ade80');
+    await normalizePhotos(item);
+    for (const f of files) {
+      item.photos.push(await processPhotoFile(f));
+      item.photoIdx = item.photos.length - 1;        // última adicionada passa a ser a exibida
     }
-
+    syncActivePhoto(item);
+    save(key, lists[key]);
+    showToast(files.length > 1 ? `✓ ${files.length} fotos adicionadas` : '✓ Foto adicionada', '#4ade80');
     renderAll();
-    renderDetailModal();
+    if (from === 'edit') renderEditPhotos(); else renderDetailModal();
   } catch(e) {
     console.error('[BottleUpload]', e);
     showToast('Erro: ' + e.message, '#f87171');
   }
 }
-
+async function removePhotoAt(key, idx, pi, from) {
+  const item = lists[key]?.[idx];
+  if (!item) return;
+  await normalizePhotos(item);
+  const ref = item.photos[pi];
+  if (ref === undefined) return;
+  if (!/^https?:/.test(ref)) await deleteBottleImage(ref);
+  item.photos.splice(pi, 1);
+  if (pi < (item.photoIdx || 0)) item.photoIdx--;
+  syncActivePhoto(item);
+  save(key, lists[key]);
+  renderAll();
+  if (from === 'edit') renderEditPhotos(); else renderDetailModal();
+  showToast('Foto removida', '#f5c842');
+}
+function selectPhoto(key, idx, pi) {
+  const item = lists[key]?.[idx];
+  if (!item) return;
+  const ph = getPhotos(item);
+  if (!ph[pi]) return;
+  if (!Array.isArray(item.photos) || !item.photos.length) item.photos = ph.slice(); // legado de 1 foto
+  item.photoIdx = pi;
+  syncActivePhoto(item);
+  save(key, lists[key]);
+  renderAll();
+  renderEditPhotos();
+}
 async function removeBottleForItem(key, idx) {
   const item = lists[key]?.[idx];
   if (!item) return;
-  await deleteBottleImage(item.id);
-  // Limpar URL da nuvem do item também
-  if (item.bottleUrl) { delete item.bottleUrl; save(key, lists[key]); }
-  renderAll();
-  renderDetailModal();
-  showToast('Foto removida', '#f5c842');
+  await removePhotoAt(key, idx, item.photoIdx || 0, 'detail');
+}
+
+// ─── Fotos no sheet de edição ─────────────────────────────────
+function renderEditPhotos() {
+  const grid = document.getElementById('edit-photos-grid');
+  if (!grid || editKey === null || editIdx === null) return;
+  const item = lists[editKey]?.[editIdx];
+  if (!item) return;
+  const ph = getPhotos(item);
+  const act = Math.min(item.photoIdx || 0, Math.max(ph.length - 1, 0));
+  const box = 'width:64px;height:76px;border-radius:10px;position:relative;flex-shrink:0;';
+  let h = ph.map((ref, pi) => {
+    const src = photoSrc(ref);
+    const on = pi === act;
+    return `<div style="${box}border:2px solid ${on ? '#f5c842' : 'rgba(255,255,255,0.12)'};background:rgba(255,255,255,0.03);cursor:pointer;overflow:hidden" onclick="selectPhoto('${editKey}',${editIdx},${pi})">
+      ${src ? `<img src="${src}" style="width:100%;height:100%;object-fit:contain;display:block" alt="">` : `<div style="font-size:10px;color:var(--text3);padding:6px;text-align:center">só no outro aparelho</div>`}
+      ${on ? `<span style="position:absolute;left:3px;bottom:3px;background:#f5c842;color:#1a1400;font-size:9px;font-weight:800;border-radius:6px;padding:1px 5px">✓ card</span>` : ''}
+      <button type="button" onclick="event.stopPropagation();removePhotoAt('${editKey}',${editIdx},${pi},'edit')" style="position:absolute;top:2px;right:2px;width:18px;height:18px;border-radius:50%;border:none;background:rgba(0,0,0,0.6);color:rgba(248,113,113,0.85);font-size:10px;line-height:1;cursor:pointer;padding:0">✕</button>
+    </div>`;
+  }).join('');
+  h += `<button type="button" onclick="document.getElementById('edit-photo-input').click()" style="${box}border:2px dashed rgba(255,255,255,0.2);background:transparent;color:var(--text2);font-size:22px;cursor:pointer;display:flex;align-items:center;justify-content:center">+</button>`;
+  grid.innerHTML = h;
+}
+async function handleEditPhotoUpload(event) {
+  const files = Array.from(event.target.files || []);
+  event.target.value = '';
+  if (!files.length || editKey === null || editIdx === null) return;
+  await addPhotos(editKey, editIdx, files, 'edit');
 }
 
 // ─── Init on load ─────────────────────────────────────────────
